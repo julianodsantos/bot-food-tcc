@@ -32,8 +32,12 @@ public class GeminiVisionClient {
         String instruction = """
                 Você é um nutricionista. Analise a FOTO e devolva JSON com itens de comida no prato.
                 Para cada item:
-                - name (pt-BR), portion_label: small|medium|large, quantity_grams (estimada), confidence 0..1
-                Não invente itens. Se incerto, use confidence baixa.
+                - name_pt (o nome em Português-Brasil, ex: "Arroz branco cozido", "Farofa"),
+                - name_en (o nome em Inglês para a API USDA, ex: "cooked white rice", "cassava flour"),
+                - portion_label: small|medium|large,
+                - quantity_grams (estimada),
+                - confidence 0..1
+                Use o termo em inglês mais provável de ser encontrado na base de dados USDA.
                 """;
 
         Map<String, Object> req = buildRequest(imageBytes, mimeType, instruction);
@@ -72,15 +76,17 @@ public class GeminiVisionClient {
                 )
         );
 
+        // --- MUDANÇA 2: O SCHEMA ---
         Map<String, Object> schemaItem = Map.of(
                 "type", "object",
                 "properties", Map.of(
-                        "name", Map.of("type", "string"),
+                        "name_pt", Map.of("type", "string"), // Nome em Português
+                        "name_en", Map.of("type", "string"), // Nome em Inglês
                         "portion_label", Map.of("type", "string", "enum", List.of("small", "medium", "large")),
                         "quantity_grams", Map.of("type", "number"),
                         "confidence", Map.of("type", "number")
                 ),
-                "required", List.of("name", "portion_label")
+                "required", List.of("name_pt", "name_en", "portion_label") // Exigimos os dois nomes
         );
         Map<String, Object> schema = Map.of(
                 "type", "object",
@@ -93,7 +99,7 @@ public class GeminiVisionClient {
                 "generationConfig", Map.of(
                         "responseMimeType", "application/json",
                         "responseSchema", schema,
-                        "maxOutputTokens", 2048
+                        "maxOutputTokens", 8192
                 )
         );
     }
@@ -105,15 +111,18 @@ public class GeminiVisionClient {
         return cred.getAccessToken().getTokenValue();
     }
 
-    // Resultado
     public static class PlateAnalysis {
         @JsonProperty("items")
         public List<FoodItem> items = List.of();
     }
 
     public static class FoodItem {
-        @JsonProperty("name")
-        public String name;
+        @JsonProperty("name_pt")
+        public String namePt;
+
+        @JsonProperty("name_en")
+        public String nameEn;
+
         @JsonProperty("portion_label")
         public String portionLabel;
         @JsonProperty("quantity_grams")
@@ -122,3 +131,4 @@ public class GeminiVisionClient {
         public Double confidence;
     }
 }
+

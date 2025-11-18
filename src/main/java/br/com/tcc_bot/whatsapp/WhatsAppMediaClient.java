@@ -19,12 +19,10 @@ public class WhatsAppMediaClient {
     private final RestTemplate http = new RestTemplate();
     private final ObjectMapper mapper = new ObjectMapper();
 
-    /** Retorna bytes da imagem + mimeType do WhatsApp */
     public Media download(String mediaId) throws Exception {
         HttpHeaders h = new HttpHeaders();
         h.setBearerAuth(whatsappToken);
 
-        // 1) Metadados: url (assinada) + mime_type
         ResponseEntity<String> metaResp = http.exchange(
                 "https://graph.facebook.com/" + graphApiVersion + "/" + mediaId,
                 HttpMethod.GET, new HttpEntity<>(h), String.class);
@@ -36,7 +34,6 @@ public class WhatsAppMediaClient {
         String url = meta.path("url").asText();
         String mime = meta.path("mime_type").asText("image/jpeg");
 
-        // 2) Download binário usando o mesmo Bearer
         ResponseEntity<byte[]> bin = http.exchange(url, HttpMethod.GET, new HttpEntity<>(h), byte[].class);
         if (!bin.getStatusCode().is2xxSuccessful() || bin.getBody() == null) {
             throw new RuntimeException("Falha no download da mídia: " + bin.getStatusCode());
