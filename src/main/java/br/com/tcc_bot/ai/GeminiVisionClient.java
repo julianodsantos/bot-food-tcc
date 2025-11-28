@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.auth.oauth2.GoogleCredentials;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
@@ -15,14 +14,6 @@ import java.util.*;
 
 @Component
 public class GeminiVisionClient {
-
-    @Value("${GCP_PROJECT}")
-    private String projectId;
-    @Value("${GCP_LOCATION:us-central1}")
-    private String location;
-    @Value("${VERTEX_MODEL:gemini-2.5-flash}")
-    private String modelId;
-
     private final ObjectMapper mapper = new ObjectMapper();
     private final HttpClient http = HttpClient.newHttpClient();
 
@@ -42,9 +33,7 @@ public class GeminiVisionClient {
 
         Map<String, Object> req = buildRequest(imageBytes, mimeType, instruction);
 
-        String url = String.format(
-                "https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent",
-                location, projectId, location, modelId);
+        String url = "https://aiplatform.googleapis.com/v1/projects/tcc-bot-wpp/locations/global/publishers/google/models/gemini-3-pro-preview:generateContent";
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -76,7 +65,19 @@ public class GeminiVisionClient {
                 )
         );
 
-        // --- MUDANÇA 2: O SCHEMA ---
+        Map<String, Object> schema = getStringObjectMap();
+
+        return Map.of(
+                "contents", List.of(content),
+                "generationConfig", Map.of(
+                        "responseMimeType", "application/json",
+                        "responseSchema", schema,
+                        "maxOutputTokens", 8192
+                )
+        );
+    }
+
+    private static Map<String, Object> getStringObjectMap() {
         Map<String, Object> schemaItem = Map.of(
                 "type", "object",
                 "properties", Map.of(
@@ -86,21 +87,12 @@ public class GeminiVisionClient {
                         "quantity_grams", Map.of("type", "number"),
                         "confidence", Map.of("type", "number")
                 ),
-                "required", List.of("name_pt", "name_en", "portion_label") // Exigimos os dois nomes
+                "required", List.of("name_pt", "name_en", "portion_label")
         );
-        Map<String, Object> schema = Map.of(
+        return Map.of(
                 "type", "object",
                 "properties", Map.of("items", Map.of("type", "array", "items", schemaItem)),
                 "required", List.of("items")
-        );
-
-        return Map.of(
-                "contents", List.of(content),
-                "generationConfig", Map.of(
-                        "responseMimeType", "application/json",
-                        "responseSchema", schema,
-                        "maxOutputTokens", 8192
-                )
         );
     }
 
@@ -123,8 +115,6 @@ public class GeminiVisionClient {
         @JsonProperty("name_en")
         public String nameEn;
 
-        @JsonProperty("portion_label")
-        public String portionLabel;
         @JsonProperty("quantity_grams")
         public Double quantityGrams;
         @JsonProperty("confidence")
