@@ -13,7 +13,7 @@ public class WhatsAppMediaClient {
     @Value("${WHATSAPP_TOKEN}")
     private String whatsappToken;
 
-    @Value("${GRAPH_API_VERSION:v21.0}")
+    @Value("${GRAPH_API_VERSION:v24.0}")
     private String graphApiVersion;
 
     private final RestTemplate http = new RestTemplate();

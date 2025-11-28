@@ -21,7 +21,7 @@ public class WhatsAppApiClient {
     @Value("${WHATSAPP_PHONE_NUMBER_ID}")
     private String phoneNumberId;
 
-    @Value("${GRAPH_API_VERSION:v21.0}")
+    @Value("${GRAPH_API_VERSION:v24.0}")
     private String graphApiVersion;
 
     private String messagesUrl() {
@@ -52,7 +52,7 @@ public class WhatsAppApiClient {
         h.setContentType(MediaType.APPLICATION_JSON);
 
         List<Map<String, Object>> buttonActions = buttons.entrySet().stream()
-                .map(entry -> Map.<String, Object>of(
+                .map(entry -> Map.of(
                         "type", "reply",
                         "reply", Map.of("id", entry.getKey(), "title", entry.getValue())
                 ))
