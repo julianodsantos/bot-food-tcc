@@ -11,11 +11,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 @RestController
 @RequestMapping("/webhook")
@@ -23,8 +21,10 @@ public class WhatsAppWebhookController {
 
     private static final Logger log = LoggerFactory.getLogger(WhatsAppWebhookController.class);
 
-    private final Map<String, GeminiVisionClient.PlateAnalysis> pendingAnalyses = new ConcurrentHashMap<>();
+    private final Map<String, Long> processedMessages = new ConcurrentHashMap<>();
+    private static final long MESSAGE_EXPIRY_MS = TimeUnit.MINUTES.toMillis(10); // 10 minutos
 
+    private final Map<String, GeminiVisionClient.PlateAnalysis> pendingAnalyses = new ConcurrentHashMap<>();
     private final Map<String, String> userEditState = new ConcurrentHashMap<>();
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -71,20 +71,25 @@ public class WhatsAppWebhookController {
                     JsonNode value = change.path("value");
                     for (JsonNode msg : value.path("messages")) {
 
+                        String messageId = msg.path("id").asText("");
                         String from = msg.path("from").asText("");
                         String type = msg.path("type").asText("");
 
-                        if ("image".equals(type)) {
-                            handleImage(from, msg.path("image").path("id").asText(""));
+                        if (isMessageAlreadyProcessed(messageId)) {
+                            log.info("Mensagem duplicada ignorada: {} de {}", messageId, from);
+                            continue;
                         }
-                        else if ("text".equals(type)) {
-                            handleText(from, msg.path("text").path("body").asText(""));
-                        }
-                        else if ("interactive".equals(type)) {
-                            handleInteractive(from, msg.path("interactive"));
-                        }
-                        else {
-                            api.sendText(from, "Por enquanto analiso apenas **fotos**. Envie uma imagem do seu prato.");
+
+                        markMessageAsProcessed(messageId);
+
+                        log.info("Processando mensagem {} do tipo {} de {}", messageId, type, from);
+
+                        switch (type) {
+                            case "image" -> handleImage(from, msg.path("image").path("id").asText(""));
+                            case "text" -> handleText(from, msg.path("text").path("body").asText(""));
+                            case "interactive" -> handleInteractive(from, msg.path("interactive"));
+                            case null, default ->
+                                    api.sendText(from, "Por enquanto analiso apenas *fotos*. Envie uma imagem do seu prato.");
                         }
                     }
                 }
@@ -92,11 +97,49 @@ public class WhatsAppWebhookController {
         } catch (Exception e) {
             log.error("Erro ao processar webhook", e);
         }
+
+        cleanupOldMessages();
+
         return ResponseEntity.ok().build();
     }
 
+    /**
+     * Verifica se uma mensagem já foi processada
+     */
+    private boolean isMessageAlreadyProcessed(String messageId) {
+        if (!StringUtils.hasText(messageId)) {
+            return false;
+        }
 
-    /** * Rota 1: Chamado quando o usuário envia uma IMAGEM
+        Long timestamp = processedMessages.get(messageId);
+        if (timestamp == null) {
+            return false;
+        }
+
+        return (System.currentTimeMillis() - timestamp) < MESSAGE_EXPIRY_MS;
+    }
+
+    /**
+     * Marca uma mensagem como processada
+     */
+    private void markMessageAsProcessed(String messageId) {
+        if (StringUtils.hasText(messageId)) {
+            processedMessages.put(messageId, System.currentTimeMillis());
+        }
+    }
+
+    /**
+     * Remove mensagens antigas do cache (evita memory leak)
+     */
+    private void cleanupOldMessages() {
+        long now = System.currentTimeMillis();
+        processedMessages.entrySet().removeIf(entry ->
+                (now - entry.getValue()) > MESSAGE_EXPIRY_MS
+        );
+    }
+
+    /**
+     * Rota 1: Chamado quando o usuário envia uma IMAGEM
      */
     private void handleImage(String from, String mediaId) {
         try {
@@ -108,7 +151,6 @@ public class WhatsAppWebhookController {
             GeminiVisionClient.PlateAnalysis analysis = analysisService.analyzeImage(media.bytes(), media.mimeType());
 
             pendingAnalyses.put(from, analysis);
-
             userEditState.remove(from);
 
             String body = formatSimpleAnalysisBody(analysis);
@@ -128,7 +170,8 @@ public class WhatsAppWebhookController {
         }
     }
 
-    /** * Rota 2: Chamado quando o usuário envia um TEXTO
+    /**
+     * Rota 2: Chamado quando o usuário envia um TEXTO
      */
     private void handleText(String from, String body) {
         String editState = userEditState.get(from);
@@ -140,7 +183,8 @@ public class WhatsAppWebhookController {
         }
     }
 
-    /** * Rota 3: Chamado quando o usuário clica em um BOTÃO ou item de LISTA
+    /**
+     * Rota 3: Chamado quando o usuário clica em um BOTÃO ou item de LISTA
      */
     private void handleInteractive(String from, JsonNode interactiveNode) {
         String interactiveType = interactiveNode.path("type").asText("");
@@ -166,7 +210,7 @@ public class WhatsAppWebhookController {
                 case "edit_analysis":
                     GeminiVisionClient.PlateAnalysis pendingAnalysis = pendingAnalyses.get(from);
                     if (pendingAnalysis != null) {
-                        sendUpdatedAnalysisList(from, pendingAnalysis); // Envia o menu de edição
+                        sendUpdatedAnalysisList(from, pendingAnalysis);
                     } else {
                         api.sendText(from, "Sua análise expirou. Envie a foto novamente.");
                     }
@@ -179,7 +223,8 @@ public class WhatsAppWebhookController {
         }
     }
 
-    /** * Chamado quando o usuário clica em um item da lista para editar
+    /**
+     * Chamado quando o usuário clica em um item da lista para editar
      */
     private void handleEditItem(String from, String selectedId) {
         GeminiVisionClient.PlateAnalysis pendingAnalysis = pendingAnalyses.get(from);
@@ -211,7 +256,8 @@ public class WhatsAppWebhookController {
         }
     }
 
-    /** * Chamado quando o usuário envia um texto e está no "modo de edição"
+    /**
+     * Chamado quando o usuário envia um texto e está no "modo de edição"
      */
     private void handleWeightEdit(String from, String editStateId, String newWeightText) {
         GeminiVisionClient.PlateAnalysis pendingAnalysis = pendingAnalyses.get(from);
@@ -248,8 +294,8 @@ public class WhatsAppWebhookController {
         }
     }
 
-
-    /** * Chamado quando o usuário clica em "✅ Confirmar Análise"
+    /**
+     * Chamado quando o usuário clica em "✅ Confirmar Análise"
      */
     private void handleConfirm(String from) {
         GeminiVisionClient.PlateAnalysis analysisToConfirm = pendingAnalyses.get(from);
@@ -292,9 +338,8 @@ public class WhatsAppWebhookController {
         return sbBody.toString();
     }
 
-
-    /** * Cria e envia a Lista Interativa (Menu) com os itens e o botão de confirmar
-     *
+    /**
+     * Cria e envia a Lista Interativa (Menu) com os itens e o botão de confirmar
      */
     private void sendUpdatedAnalysisList(String from, GeminiVisionClient.PlateAnalysis analysis) {
         if (analysis == null || analysis.items == null || analysis.items.isEmpty()) {
@@ -305,7 +350,7 @@ public class WhatsAppWebhookController {
         StringBuilder sbBody = new StringBuilder("Identifiquei estes itens:\n\n");
         for (GeminiVisionClient.FoodItem item : analysis.items) {
             String grams = item.quantityGrams == null ? "?" : String.valueOf(Math.round(item.quantityGrams));
-            sbBody.append("• *").append(safe(item.namePt)).append("*"); // Nome em negrito
+            sbBody.append("• *").append(safe(item.namePt)).append("*");
             sbBody.append(" (~").append(grams).append(" g)\n");
         }
         sbBody.append("\nClique em um item abaixo para editar o peso, ou confirme a análise.");
@@ -321,7 +366,7 @@ public class WhatsAppWebhookController {
             String title = safe(item.namePt);
 
             if (title.length() > WHATSAPP_TITLE_LIMIT) {
-                int lastSpaceIndex = title.lastIndexOf(' ', WHATSAPP_TITLE_LIMIT - 1); // Busca até o 23º char
+                int lastSpaceIndex = title.lastIndexOf(' ', WHATSAPP_TITLE_LIMIT - 1);
 
                 if (lastSpaceIndex > 0) {
                     title = title.substring(0, lastSpaceIndex) + "...";
@@ -337,8 +382,8 @@ public class WhatsAppWebhookController {
         api.sendListMessage(from, body, "Editar ou Confirmar", rows);
     }
 
-
-    /** * Formata a resposta COMPLETA (com nutrientes)
+    /**
+     * Formata a resposta COMPLETA (com nutrientes)
      */
     private String formatFullAnalysis(AnalysisService.FullAnalysisResponse analysis) {
         if (analysis == null || analysis.items == null || analysis.items.isEmpty()) {
@@ -374,10 +419,10 @@ public class WhatsAppWebhookController {
         return sb.toString();
     }
 
-    /** * Helper para evitar NullPointerException em nomes de itens
+    /**
+     * Helper para evitar NullPointerException em nomes de itens
      */
     private String safe(String s) {
         return s == null ? "item" : s;
     }
 }
-

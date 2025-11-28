@@ -111,10 +111,10 @@ public class GeminiVisionClient {
     public static class FoodItem {
         @JsonProperty("name_pt")
         public String namePt;
-
         @JsonProperty("name_en")
         public String nameEn;
-
+        @JsonProperty("portion_label")
+        public String portionLabel;
         @JsonProperty("quantity_grams")
         public Double quantityGrams;
         @JsonProperty("confidence")
