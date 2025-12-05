@@ -9,12 +9,6 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
-import javax.imageio.ImageIO;
-import java.awt.Graphics2D;
-import java.awt.Image;
-import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
@@ -31,9 +25,7 @@ public class GeminiVisionClient {
     }
 
     public PlateAnalysis analyzePlate(byte[] imageBytes) throws Exception {
-        byte[] optimizedBytes = optimizeImage(imageBytes);
-        String optimizedMime = "image/jpeg";
-
+        String mimeType = "image/jpeg";
         String token = fetchAccessToken();
 
         String instruction = """
@@ -50,7 +42,7 @@ public class GeminiVisionClient {
                 Ex: "Textura fibrosa, brilho de óleo". Não escreva frases longas.
                 """;
 
-        Map<String, Object> req = buildRequest(optimizedBytes, optimizedMime, instruction);
+        Map<String, Object> req = buildRequest(imageBytes, mimeType, instruction);
 
         String url = "https://aiplatform.googleapis.com/v1/projects/tcc-bot-wpp/locations/us-central1/publishers/google/models/gemini-3-pro-preview:generateContent";
 
@@ -69,44 +61,6 @@ public class GeminiVisionClient {
             throw new RuntimeException("Resposta do modelo sem conteúdo de texto.");
         }
         return mapper.readValue(textNode.asText(), PlateAnalysis.class);
-    }
-
-    /**
-     * Reduz a imagem para max 1024px e converte para JPEG.
-     * Reduz payload de ~5MB para ~150KB.
-     */
-    private byte[] optimizeImage(byte[] originalBytes) {
-        try {
-            ByteArrayInputStream bais = new ByteArrayInputStream(originalBytes);
-            BufferedImage originalImage = ImageIO.read(bais);
-
-            if (originalImage == null) return originalBytes;
-
-            int targetWidth = 1024;
-            int originalWidth = originalImage.getWidth();
-            int originalHeight = originalImage.getHeight();
-
-            if (originalWidth <= targetWidth && originalHeight <= targetWidth) {
-                return originalBytes;
-            }
-
-            double ratio = (double) targetWidth / Math.max(originalWidth, originalHeight);
-            int newWidth = (int) (originalWidth * ratio);
-            int newHeight = (int) (originalHeight * ratio);
-
-            BufferedImage resizedImage = new BufferedImage(newWidth, newHeight, BufferedImage.TYPE_INT_RGB);
-            Graphics2D g = resizedImage.createGraphics();
-            g.drawImage(originalImage.getScaledInstance(newWidth, newHeight, Image.SCALE_SMOOTH), 0, 0, null);
-            g.dispose();
-
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            ImageIO.write(resizedImage, "jpg", baos);
-
-            return baos.toByteArray();
-        } catch (Exception e) {
-            System.err.println("Erro ao otimizar imagem (usando original): " + e.getMessage());
-            return originalBytes;
-        }
     }
 
     private Map<String, Object> buildRequest(byte[] image, String mime, String instruction) {
