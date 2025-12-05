@@ -66,6 +66,9 @@ public class WhatsAppWebhookController {
     public ResponseEntity<Void> receive(@RequestBody String rawBody) {
         try {
             JsonNode root = mapper.readTree(rawBody);
+
+            log.info("WEBHOOK RECEBIDO: {}", rawBody);
+
             for (JsonNode entry : root.path("entry")) {
                 for (JsonNode change : entry.path("changes")) {
                     JsonNode value = change.path("value");
@@ -75,14 +78,16 @@ public class WhatsAppWebhookController {
                         String from = msg.path("from").asText("");
                         String type = msg.path("type").asText("");
 
+                        log.info("MessageID extraído: [{}] | From: {} | Type: {}",
+                                messageId, from, type);
+
                         if (isMessageAlreadyProcessed(messageId)) {
-                            log.info("Mensagem duplicada ignorada: {} de {}", messageId, from);
+                            log.info("DUPLICATA DETECTADA E BLOQUEADA: {}", messageId);
                             continue;
                         }
 
                         markMessageAsProcessed(messageId);
-
-                        log.info("Processando mensagem {} do tipo {} de {}", messageId, type, from);
+                        log.info("PROCESSANDO (primeira vez): {}", messageId);
 
                         switch (type) {
                             case "image" -> handleImage(from, msg.path("image").path("id").asText(""));
@@ -144,9 +149,11 @@ public class WhatsAppWebhookController {
     private void handleImage(String from, String mediaId) {
         try {
             log.info("Imagem recebida de {}. media_id={}", from, mediaId);
-            api.sendText(from, "Recebi sua foto! Analisando com o Gemini... 🤖");
+            api.sendText(from, "\uD83D\uDCF8 Foto recebida!");
 
             var media = mediaClient.download(mediaId);
+
+            api.sendText(from, "🤖 Analisando imagem...");
 
             GeminiVisionClient.PlateAnalysis analysis = analysisService.analyzeImage(media.bytes(), media.mimeType());
 
