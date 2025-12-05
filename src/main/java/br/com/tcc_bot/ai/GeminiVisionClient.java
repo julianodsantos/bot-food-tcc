@@ -1,58 +1,112 @@
 package br.com.tcc_bot.ai;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.auth.oauth2.GoogleCredentials;
-import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
 
-import java.net.URI;
-import java.net.http.*;
-import java.nio.charset.StandardCharsets;
-import java.util.*;
+import javax.imageio.ImageIO;
+import java.awt.Graphics2D;
+import java.awt.Image;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 @Component
 public class GeminiVisionClient {
-    private final ObjectMapper mapper = new ObjectMapper();
-    private final HttpClient http = HttpClient.newHttpClient();
+    private final ObjectMapper mapper;
+    private final RestClient restClient;
 
-    public PlateAnalysis analyzePlate(byte[] imageBytes, String mimeType) throws Exception {
+    public GeminiVisionClient(RestClient.Builder builder, ObjectMapper mapper) {
+        this.restClient = builder.build();
+        this.mapper = mapper;
+    }
+
+    public PlateAnalysis analyzePlate(byte[] imageBytes) throws Exception {
+        byte[] optimizedBytes = optimizeImage(imageBytes);
+        String optimizedMime = "image/jpeg";
+
         String token = fetchAccessToken();
 
         String instruction = """
-                Você é um nutricionista. Analise a FOTO e devolva JSON com itens de comida no prato.
-                Para cada item:
-                - name_pt (o nome em Português-Brasil, ex: "Arroz branco cozido", "Farofa"),
-                - name_en (o nome em Inglês para a API USDA, ex: "cooked white rice", "cassava flour"),
-                - portion_label: small|medium|large,
-                - quantity_grams (estimada),
-                - confidence 0..1
-                Use o termo em inglês mais provável de ser encontrado na base de dados USDA.
+                Atue como um Nutricionista Sênior especialista em Visão Computacional e USDA.
+                
+                Analise a imagem e gere um JSON estrito com os itens do prato.
+                
+                DIRETRIZES TÉCNICAS:
+                1. Escala: Assuma prato padrão de 26cm.
+                2. Vocabulário: Use termos técnicos exatos do USDA no campo 'name_en' (ex: "Rice, white, long-grain, cooked").
+                3. Preparo: Diferencie Frito/Cozido/Assado e Com/Sem pele.
+                
+                No campo 'reasoning', seja TELEGRÁFICO e direto (máximo 5 palavras).
+                Ex: "Textura fibrosa, brilho de óleo". Não escreva frases longas.
                 """;
 
-        Map<String, Object> req = buildRequest(imageBytes, mimeType, instruction);
+        Map<String, Object> req = buildRequest(optimizedBytes, optimizedMime, instruction);
 
-        String url = "https://aiplatform.googleapis.com/v1/projects/tcc-bot-wpp/locations/global/publishers/google/models/gemini-3-pro-preview:generateContent";
+        String url = "https://aiplatform.googleapis.com/v1/projects/tcc-bot-wpp/locations/us-central1/publishers/google/models/gemini-3-pro-preview:generateContent";
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+        String responseBody = restClient.post()
+                .uri(url)
                 .header("Authorization", "Bearer " + token)
-                .header("Content-Type", "application/json; charset=UTF-8")
-                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(req), StandardCharsets.UTF_8))
-                .build();
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(req)
+                .retrieve()
+                .body(String.class);
 
-        HttpResponse<String> resp = http.send(request, HttpResponse.BodyHandlers.ofString());
-        if (resp.statusCode() != HttpStatus.OK.value()) {
-            throw new RuntimeException("Gemini erro HTTP " + resp.statusCode() + ": " + resp.body());
-        }
-
-        JsonNode textNode = mapper.readTree(resp.body())
+        JsonNode textNode = mapper.readTree(responseBody)
                 .path("candidates").path(0).path("content").path("parts").path(0).path("text");
+
         if (textNode.isMissingNode() || textNode.asText().isBlank()) {
             throw new RuntimeException("Resposta do modelo sem conteúdo de texto.");
         }
         return mapper.readValue(textNode.asText(), PlateAnalysis.class);
+    }
+
+    /**
+     * Reduz a imagem para max 1024px e converte para JPEG.
+     * Reduz payload de ~5MB para ~150KB.
+     */
+    private byte[] optimizeImage(byte[] originalBytes) {
+        try {
+            ByteArrayInputStream bais = new ByteArrayInputStream(originalBytes);
+            BufferedImage originalImage = ImageIO.read(bais);
+
+            if (originalImage == null) return originalBytes;
+
+            int targetWidth = 1024;
+            int originalWidth = originalImage.getWidth();
+            int originalHeight = originalImage.getHeight();
+
+            if (originalWidth <= targetWidth && originalHeight <= targetWidth) {
+                return originalBytes;
+            }
+
+            double ratio = (double) targetWidth / Math.max(originalWidth, originalHeight);
+            int newWidth = (int) (originalWidth * ratio);
+            int newHeight = (int) (originalHeight * ratio);
+
+            BufferedImage resizedImage = new BufferedImage(newWidth, newHeight, BufferedImage.TYPE_INT_RGB);
+            Graphics2D g = resizedImage.createGraphics();
+            g.drawImage(originalImage.getScaledInstance(newWidth, newHeight, Image.SCALE_SMOOTH), 0, 0, null);
+            g.dispose();
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ImageIO.write(resizedImage, "jpg", baos);
+
+            return baos.toByteArray();
+        } catch (Exception e) {
+            System.err.println("Erro ao otimizar imagem (usando original): " + e.getMessage());
+            return originalBytes;
+        }
     }
 
     private Map<String, Object> buildRequest(byte[] image, String mime, String instruction) {
@@ -65,29 +119,30 @@ public class GeminiVisionClient {
                 )
         );
 
-        Map<String, Object> schema = getStringObjectMap();
+        Map<String, Object> generationConfig = new HashMap<>();
+        generationConfig.put("temperature", 0.2);
+        generationConfig.put("responseMimeType", "application/json");
+        generationConfig.put("responseSchema", getResponseSchema());
+        generationConfig.put("maxOutputTokens", 4096);
 
         return Map.of(
                 "contents", List.of(content),
-                "generationConfig", Map.of(
-                        "responseMimeType", "application/json",
-                        "responseSchema", schema,
-                        "maxOutputTokens", 8192
-                )
+                "generationConfig", generationConfig
         );
     }
 
-    private static Map<String, Object> getStringObjectMap() {
+    private Map<String, Object> getResponseSchema() {
         Map<String, Object> schemaItem = Map.of(
                 "type", "object",
                 "properties", Map.of(
-                        "name_pt", Map.of("type", "string"), // Nome em Português
-                        "name_en", Map.of("type", "string"), // Nome em Inglês
+                        "name_pt", Map.of("type", "string"),
+                        "name_en", Map.of("type", "string"),
+                        "reasoning", Map.of("type", "string"),
                         "portion_label", Map.of("type", "string", "enum", List.of("small", "medium", "large")),
                         "quantity_grams", Map.of("type", "number"),
                         "confidence", Map.of("type", "number")
                 ),
-                "required", List.of("name_pt", "name_en", "portion_label")
+                "required", List.of("name_pt", "name_en", "portion_label", "quantity_grams", "reasoning")
         );
         return Map.of(
                 "type", "object",
@@ -108,17 +163,15 @@ public class GeminiVisionClient {
         public List<FoodItem> items = List.of();
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class FoodItem {
         @JsonProperty("name_pt")
         public String namePt;
         @JsonProperty("name_en")
         public String nameEn;
-        @JsonProperty("portion_label")
-        public String portionLabel;
         @JsonProperty("quantity_grams")
         public Double quantityGrams;
         @JsonProperty("confidence")
         public Double confidence;
     }
 }
-

@@ -3,9 +3,8 @@ package br.com.tcc_bot.whatsapp;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.RestClient;
 
 @Component
 public class WhatsAppMediaClient {
@@ -16,29 +15,46 @@ public class WhatsAppMediaClient {
     @Value("${GRAPH_API_VERSION:v24.0}")
     private String graphApiVersion;
 
-    private final RestTemplate http = new RestTemplate();
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final RestClient restClient;
+    private final ObjectMapper mapper; // Injetamos o Jackson ObjectMapper
 
-    public Media download(String mediaId) throws Exception {
-        HttpHeaders h = new HttpHeaders();
-        h.setBearerAuth(whatsappToken);
+    public WhatsAppMediaClient(RestClient.Builder builder, ObjectMapper mapper) {
+        this.restClient = builder.build();
+        this.mapper = mapper;
+    }
 
-        ResponseEntity<String> metaResp = http.exchange(
-                "https://graph.facebook.com/" + graphApiVersion + "/" + mediaId,
-                HttpMethod.GET, new HttpEntity<>(h), String.class);
+    public Media download(String mediaId) {
+        try {
+            String jsonBody = restClient.get()
+                    .uri("https://graph.facebook.com/" + graphApiVersion + "/" + mediaId)
+                    .header("Authorization", "Bearer " + whatsappToken)
+                    .retrieve()
+                    .body(String.class);
 
-        if (!metaResp.getStatusCode().is2xxSuccessful()) {
-            throw new RuntimeException("Falha ao obter metadados da mídia: " + metaResp);
+            if (jsonBody == null) {
+                throw new RuntimeException("Falha ao obter metadados da mídia: resposta vazia");
+            }
+
+            JsonNode meta = mapper.readTree(jsonBody);
+
+            String url = meta.path("url").asText();
+            String mime = meta.path("mime_type").asText("image/jpeg");
+
+            byte[] bytes = restClient.get()
+                    .uri(url)
+                    .header("Authorization", "Bearer " + whatsappToken)
+                    .retrieve()
+                    .body(byte[].class);
+
+            if (bytes == null) {
+                throw new RuntimeException("Falha no download da mídia: corpo vazio");
+            }
+
+            return new Media(bytes, mime);
+
+        } catch (Exception e) {
+            throw new RuntimeException("Erro ao baixar mídia do WhatsApp: " + e.getMessage(), e);
         }
-        JsonNode meta = mapper.readTree(metaResp.getBody());
-        String url = meta.path("url").asText();
-        String mime = meta.path("mime_type").asText("image/jpeg");
-
-        ResponseEntity<byte[]> bin = http.exchange(url, HttpMethod.GET, new HttpEntity<>(h), byte[].class);
-        if (!bin.getStatusCode().is2xxSuccessful() || bin.getBody() == null) {
-            throw new RuntimeException("Falha no download da mídia: " + bin.getStatusCode());
-        }
-        return new Media(bin.getBody(), mime);
     }
 
     public record Media(byte[] bytes, String mimeType) {}

@@ -1,9 +1,9 @@
 package br.com.tcc_bot.whatsapp;
 
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.RestClient;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -13,7 +13,7 @@ import java.util.Map;
 @Component
 public class WhatsAppApiClient {
 
-    private final RestTemplate http = new RestTemplate();
+    private final RestClient restClient;
 
     @Value("${WHATSAPP_TOKEN}")
     private String whatsappToken;
@@ -24,15 +24,15 @@ public class WhatsAppApiClient {
     @Value("${GRAPH_API_VERSION:v24.0}")
     private String graphApiVersion;
 
+    public WhatsAppApiClient(RestClient.Builder builder) {
+        this.restClient = builder.build();
+    }
+
     private String messagesUrl() {
         return "https://graph.facebook.com/" + graphApiVersion + "/" + phoneNumberId + "/messages";
     }
 
     public void sendText(String to, String body) {
-        HttpHeaders h = new HttpHeaders();
-        h.setBearerAuth(whatsappToken);
-        h.setContentType(MediaType.APPLICATION_JSON);
-
         Map<String, Object> payload = new HashMap<>();
         payload.put("messaging_product", "whatsapp");
         payload.put("to", to);
@@ -43,14 +43,10 @@ public class WhatsAppApiClient {
         text.put("body", body);
         payload.put("text", text);
 
-        http.postForEntity(messagesUrl(), new HttpEntity<>(payload, h), String.class);
+        doPost(payload);
     }
 
     public void sendInteractiveButtons(String to, String body, Map<String, String> buttons) {
-        HttpHeaders h = new HttpHeaders();
-        h.setBearerAuth(whatsappToken);
-        h.setContentType(MediaType.APPLICATION_JSON);
-
         List<Map<String, Object>> buttonActions = buttons.entrySet().stream()
                 .map(entry -> Map.of(
                         "type", "reply",
@@ -69,14 +65,10 @@ public class WhatsAppApiClient {
                 )
         );
 
-        http.postForEntity(messagesUrl(), new HttpEntity<>(payload, h), String.class);
+        doPost(payload);
     }
 
     public void sendListMessage(String to, String body, String buttonText, Map<String, String> rows) {
-        HttpHeaders h = new HttpHeaders();
-        h.setBearerAuth(whatsappToken);
-        h.setContentType(MediaType.APPLICATION_JSON);
-
         // Monta as linhas (rows)
         List<Map<String, Object>> listRows = new ArrayList<>();
         for (Map.Entry<String, String> entry : rows.entrySet()) {
@@ -105,7 +97,16 @@ public class WhatsAppApiClient {
                 )
         );
 
-        http.postForEntity(messagesUrl(), new HttpEntity<>(payload, h), String.class);
+        doPost(payload);
+    }
+
+    private void doPost(Object payload) {
+        restClient.post()
+                .uri(messagesUrl())
+                .header("Authorization", "Bearer " + whatsappToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(payload)
+                .retrieve()
+                .toBodilessEntity();
     }
 }
-

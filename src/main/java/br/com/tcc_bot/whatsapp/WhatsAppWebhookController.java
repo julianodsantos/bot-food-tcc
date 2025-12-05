@@ -22,7 +22,7 @@ public class WhatsAppWebhookController {
     private static final Logger log = LoggerFactory.getLogger(WhatsAppWebhookController.class);
 
     private final Map<String, Long> processedMessages = new ConcurrentHashMap<>();
-    private static final long MESSAGE_EXPIRY_MS = TimeUnit.MINUTES.toMillis(10); // 10 minutos
+    private static final long MESSAGE_EXPIRY_MS = TimeUnit.MINUTES.toMillis(10);
 
     private final Map<String, GeminiVisionClient.PlateAnalysis> pendingAnalyses = new ConcurrentHashMap<>();
     private final Map<String, String> userEditState = new ConcurrentHashMap<>();
@@ -59,9 +59,6 @@ public class WhatsAppWebhookController {
         return ResponseEntity.status(403).body("Forbidden");
     }
 
-    /**
-     * Ponto de entrada principal para todos os eventos do WhatsApp (POST)
-     */
     @PostMapping
     public ResponseEntity<Void> receive(@RequestBody String rawBody) {
         try {
@@ -72,14 +69,36 @@ public class WhatsAppWebhookController {
             for (JsonNode entry : root.path("entry")) {
                 for (JsonNode change : entry.path("changes")) {
                     JsonNode value = change.path("value");
-                    for (JsonNode msg : value.path("messages")) {
 
+                    String field = change.path("field").asText("");
+                    if (!"messages".equals(field)) {
+                        log.debug("Evento ignorado - field: {}", field);
+                        continue;
+                    }
+
+                    JsonNode messagesNode = value.path("messages");
+                    if (messagesNode.isMissingNode() || !messagesNode.isArray() || messagesNode.isEmpty()) {
+                        log.debug("Webhook sem mensagens - provavelmente status update");
+                        continue;
+                    }
+
+                    JsonNode statusesNode = value.path("statuses");
+                    if (!statusesNode.isMissingNode() && statusesNode.isArray() && !statusesNode.isEmpty()) {
+                        log.debug("Status update recebido - ignorando");
+                        continue;
+                    }
+
+                    for (JsonNode msg : messagesNode) {
                         String messageId = msg.path("id").asText("");
                         String from = msg.path("from").asText("");
                         String type = msg.path("type").asText("");
 
-                        log.info("MessageID extraído: [{}] | From: {} | Type: {}",
-                                messageId, from, type);
+                        if (!StringUtils.hasText(messageId) || !StringUtils.hasText(from)) {
+                            log.warn("Mensagem sem ID ou remetente - ignorando");
+                            continue;
+                        }
+
+                        log.info("MessageID: [{}] | From: {} | Type: {}", messageId, from, type);
 
                         if (isMessageAlreadyProcessed(messageId)) {
                             log.info("DUPLICATA DETECTADA E BLOQUEADA: {}", messageId);
@@ -93,8 +112,11 @@ public class WhatsAppWebhookController {
                             case "image" -> handleImage(from, msg.path("image").path("id").asText(""));
                             case "text" -> handleText(from, msg.path("text").path("body").asText(""));
                             case "interactive" -> handleInteractive(from, msg.path("interactive"));
-                            case null, default ->
-                                    api.sendText(from, "Por enquanto analiso apenas *fotos*. Envie uma imagem do seu prato.");
+                            case "audio", "video", "document", "sticker", "location", "contacts" -> {
+                                log.info("Tipo de mensagem não suportado: {}", type);
+                                api.sendText(from, "Por enquanto analiso apenas *fotos*. Envie uma imagem do seu prato.");
+                            }
+                            case null, default -> log.warn("Tipo de mensagem desconhecido: {}", type);
                         }
                     }
                 }
@@ -108,9 +130,6 @@ public class WhatsAppWebhookController {
         return ResponseEntity.ok().build();
     }
 
-    /**
-     * Verifica se uma mensagem já foi processada
-     */
     private boolean isMessageAlreadyProcessed(String messageId) {
         if (!StringUtils.hasText(messageId)) {
             return false;
@@ -124,18 +143,12 @@ public class WhatsAppWebhookController {
         return (System.currentTimeMillis() - timestamp) < MESSAGE_EXPIRY_MS;
     }
 
-    /**
-     * Marca uma mensagem como processada
-     */
     private void markMessageAsProcessed(String messageId) {
         if (StringUtils.hasText(messageId)) {
             processedMessages.put(messageId, System.currentTimeMillis());
         }
     }
 
-    /**
-     * Remove mensagens antigas do cache (evita memory leak)
-     */
     private void cleanupOldMessages() {
         long now = System.currentTimeMillis();
         processedMessages.entrySet().removeIf(entry ->
@@ -143,19 +156,16 @@ public class WhatsAppWebhookController {
         );
     }
 
-    /**
-     * Rota 1: Chamado quando o usuário envia uma IMAGEM
-     */
     private void handleImage(String from, String mediaId) {
         try {
             log.info("Imagem recebida de {}. media_id={}", from, mediaId);
-            api.sendText(from, "\uD83D\uDCF8 Foto recebida!");
+            api.sendText(from, "📸 Foto recebida!");
 
             var media = mediaClient.download(mediaId);
 
             api.sendText(from, "🤖 Analisando imagem...");
 
-            GeminiVisionClient.PlateAnalysis analysis = analysisService.analyzeImage(media.bytes(), media.mimeType());
+            GeminiVisionClient.PlateAnalysis analysis = analysisService.analyzeImage(media.bytes());
 
             pendingAnalyses.put(from, analysis);
             userEditState.remove(from);
@@ -177,9 +187,6 @@ public class WhatsAppWebhookController {
         }
     }
 
-    /**
-     * Rota 2: Chamado quando o usuário envia um TEXTO
-     */
     private void handleText(String from, String body) {
         String editState = userEditState.get(from);
 
@@ -190,9 +197,6 @@ public class WhatsAppWebhookController {
         }
     }
 
-    /**
-     * Rota 3: Chamado quando o usuário clica em um BOTÃO ou item de LISTA
-     */
     private void handleInteractive(String from, JsonNode interactiveNode) {
         String interactiveType = interactiveNode.path("type").asText("");
 
@@ -230,9 +234,6 @@ public class WhatsAppWebhookController {
         }
     }
 
-    /**
-     * Chamado quando o usuário clica em um item da lista para editar
-     */
     private void handleEditItem(String from, String selectedId) {
         GeminiVisionClient.PlateAnalysis pendingAnalysis = pendingAnalyses.get(from);
         if (pendingAnalysis == null) {
@@ -263,9 +264,6 @@ public class WhatsAppWebhookController {
         }
     }
 
-    /**
-     * Chamado quando o usuário envia um texto e está no "modo de edição"
-     */
     private void handleWeightEdit(String from, String editStateId, String newWeightText) {
         GeminiVisionClient.PlateAnalysis pendingAnalysis = pendingAnalyses.get(from);
         if (pendingAnalysis == null) {
@@ -301,9 +299,6 @@ public class WhatsAppWebhookController {
         }
     }
 
-    /**
-     * Chamado quando o usuário clica em "✅ Confirmar Análise"
-     */
     private void handleConfirm(String from) {
         GeminiVisionClient.PlateAnalysis analysisToConfirm = pendingAnalyses.get(from);
         if (analysisToConfirm == null) {
@@ -312,7 +307,7 @@ public class WhatsAppWebhookController {
         }
 
         try {
-            api.sendText(from, "Confirmado! Calculando os nutrientes no USDA... 📊");
+            api.sendText(from, "Confirmado! Calculando os nutrientes... 📊");
 
             AnalysisService.FullAnalysisResponse nutrition = analysisService.calculateNutrients(analysisToConfirm);
 
@@ -328,9 +323,6 @@ public class WhatsAppWebhookController {
         }
     }
 
-    /**
-     * Apenas formata o corpo da mensagem com a lista de itens e pesos.
-     */
     private String formatSimpleAnalysisBody(GeminiVisionClient.PlateAnalysis analysis) {
         if (analysis == null || analysis.items == null || analysis.items.isEmpty()) {
             return null;
@@ -345,9 +337,6 @@ public class WhatsAppWebhookController {
         return sbBody.toString();
     }
 
-    /**
-     * Cria e envia a Lista Interativa (Menu) com os itens e o botão de confirmar
-     */
     private void sendUpdatedAnalysisList(String from, GeminiVisionClient.PlateAnalysis analysis) {
         if (analysis == null || analysis.items == null || analysis.items.isEmpty()) {
             api.sendText(from, "Não consegui identificar os itens com segurança. Pode enviar outra foto?");
@@ -365,22 +354,8 @@ public class WhatsAppWebhookController {
 
         Map<String, String> rows = new LinkedHashMap<>();
 
-        final int WHATSAPP_TITLE_LIMIT = 24;
-
         for (int i = 0; i < analysis.items.size(); i++) {
-            GeminiVisionClient.FoodItem item = analysis.items.get(i);
-
-            String title = safe(item.namePt);
-
-            if (title.length() > WHATSAPP_TITLE_LIMIT) {
-                int lastSpaceIndex = title.lastIndexOf(' ', WHATSAPP_TITLE_LIMIT - 1);
-
-                if (lastSpaceIndex > 0) {
-                    title = title.substring(0, lastSpaceIndex) + "...";
-                } else {
-                    title = title.substring(0, WHATSAPP_TITLE_LIMIT - 3) + "...";
-                }
-            }
+            String title = getString(analysis, i);
             rows.put("edit_item_" + i, title);
         }
 
@@ -389,46 +364,62 @@ public class WhatsAppWebhookController {
         api.sendListMessage(from, body, "Editar ou Confirmar", rows);
     }
 
-    /**
-     * Formata a resposta COMPLETA (com nutrientes)
-     */
+    private String getString(GeminiVisionClient.PlateAnalysis analysis, int i) {
+        GeminiVisionClient.FoodItem item = analysis.items.get(i);
+
+        String title = safe(item.namePt);
+
+        if (title.length() > 24) {
+            int lastSpaceIndex = title.lastIndexOf(' ', 24 - 1);
+
+            if (lastSpaceIndex > 0) {
+                title = title.substring(0, lastSpaceIndex) + "...";
+            } else {
+                title = title.substring(0, 24 - 3) + "...";
+            }
+        }
+        return title;
+    }
+
     private String formatFullAnalysis(AnalysisService.FullAnalysisResponse analysis) {
         if (analysis == null || analysis.items == null || analysis.items.isEmpty()) {
             return "Não consegui calcular. Tente novamente.";
         }
 
-        StringBuilder sb = new StringBuilder("Aqui está a sua análise nutricional:\n\n");
+        Locale br = Locale.of("pt", "BR");
+
+        StringBuilder sb = new StringBuilder("*Análise Nutricional*\n\n");
 
         for (AnalysisService.EnrichedFoodItem it : analysis.items) {
             String grams = it.quantityGrams == null ? "?" : String.valueOf(Math.round(it.quantityGrams));
 
-            sb.append("• *").append(safe(it.name)).append("*");
-            sb.append(" (~").append(grams).append(" g)\n");
+            sb.append("*").append(safe(it.name))
+                    .append(" - ").append(grams).append("g*\n");
 
             if (it.calories > 0) {
-                sb.append(String.format("  Calorias: %.0f kcal\n", it.calories));
-                sb.append(String.format("  Carboidratos: %.1fg | Proteínas: %.1fg | Gorduras: %.1fg\n",
-                        it.carbohydrates, it.protein, it.fat));
+                sb.append(String.format(br, "  Calorias: %.0f kcal\n", it.calories));
+                sb.append(String.format(br, "  Carboidratos: %.1f g\n", it.carbohydrates));
+                sb.append(String.format(br, "  Proteínas: %.1f g\n", it.protein));
+                sb.append(String.format(br, "  Gorduras: %.1f g\n", it.fat));
             } else {
-                sb.append("  _(Não foi possível calcular os nutrientes para este item)_\n");
+                sb.append("  _(Sem dados nutricionais)_\n");
             }
             sb.append("\n");
         }
 
         AnalysisService.NutritionalTotals totals = analysis.totals;
-        sb.append("----------------------------\n");
-        sb.append("*TOTAL DO PRATO*:\n");
-        sb.append(String.format("• Calorias: *%.0f kcal*\n", totals.totalCalories));
-        sb.append(String.format("• Carboidratos: %.1f g\n", totals.totalCarbs));
-        sb.append(String.format("• Proteínas: %.1f g\n", totals.totalProtein));
-        sb.append(String.format("• Gorduras: %.1f g\n", totals.totalFat));
+
+        sb.append("━━━━━━━━━━━━━━━━━\n");
+
+        sb.append("*Total analisado*:\n");
+        sb.append(String.format(br, "  Calorias: %.0f kcal\n", totals.totalCalories));
+        sb.append(String.format(br, "  Carboidratos: %.1f g\n", totals.totalCarbs));
+        sb.append(String.format(br, "  Proteínas: %.1f g\n", totals.totalProtein));
+        sb.append(String.format(br, "  Gorduras: %.1f g", totals.totalFat));
 
         return sb.toString();
     }
 
-    /**
-     * Helper para evitar NullPointerException em nomes de itens
-     */
     private String safe(String s) {
         return s == null ? "item" : s;
     }

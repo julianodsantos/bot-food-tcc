@@ -16,9 +16,8 @@ public class AiTestController {
 
     @PostMapping(value = "/analyze", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public AnalysisService.FullAnalysisResponse analyze(@RequestPart("image") MultipartFile file) throws Exception {
-        String mime = file.getContentType() == null ? "image/jpeg" : file.getContentType();
 
-        GeminiVisionClient.PlateAnalysis analysis = analysisService.analyzeImage(file.getBytes(), mime);
+        GeminiVisionClient.PlateAnalysis analysis = analysisService.analyzeImage(file.getBytes());
 
         return analysisService.calculateNutrients(analysis);
     }

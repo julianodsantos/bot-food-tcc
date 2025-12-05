@@ -26,8 +26,8 @@ public class AnalysisService {
     /**
      * ETAPA 1: Chama o Gemini para identificar alimentos e pesos
      */
-    public GeminiVisionClient.PlateAnalysis analyzeImage(byte[] imageBytes, String mimeType) throws Exception {
-        return geminiClient.analyzePlate(imageBytes, mimeType);
+    public GeminiVisionClient.PlateAnalysis analyzeImage(byte[] imageBytes) throws Exception {
+        return geminiClient.analyzePlate(imageBytes);
     }
 
     /**
