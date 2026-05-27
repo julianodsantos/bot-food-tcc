@@ -44,7 +44,7 @@ public class GeminiVisionClient {
 
         Map<String, Object> req = buildRequest(imageBytes, mimeType, instruction);
 
-        String url = "https://aiplatform.googleapis.com/v1/projects/tcc-bot-wpp/locations/us-central1/publishers/google/models/gemini-3-pro-preview:generateContent";
+        String url = "https://aiplatform.googleapis.com/v1/projects/tcc-bot-wpp/locations/us-central1/publishers/google/models/gemini-3.1-pro-preview:generateContent";
 
         String responseBody = restClient.post()
                 .uri(url)
